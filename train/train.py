@@ -17,11 +17,11 @@ from torch.utils.data.distributed import DistributedSampler
 import sys
 
 from models.model_builder import ModelBuilder
-from train.average_meter import AverageMeter
-from train.dataset import BANDataset
-from train.distributed import get_world_size, get_rank, average_reduce, reduce_gradients, new_dist_init, \
+from average_meter import AverageMeter
+from dataset import BANDataset
+from distributed import get_world_size, get_rank, average_reduce, reduce_gradients, new_dist_init, \
     DistModule
-from train.lr_scheduler import build_lr_scheduler
+from lr_scheduler import build_lr_scheduler
 from utils import describe, print_speed, commit, load_pretrain, restore_from
 
 

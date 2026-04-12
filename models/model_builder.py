@@ -67,10 +67,10 @@ class ModelBuilder(nn.Module):
             xf = self.backbone(search)
 
             if self.neck is not None:
-                cls, reg = self.neck(xf, zf)
+                zf = self.neck(zf)
+                xf = self.neck(xf)
 
-            loc = self.ban_head(zf, xf)
-
+            cls, loc = self.ban_head(zf, xf)
             # loc loss with iou loss
             loc_loss = select_iou_loss(loc, label_loc)
             outputs = {}
