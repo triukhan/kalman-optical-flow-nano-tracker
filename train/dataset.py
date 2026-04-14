@@ -7,8 +7,8 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
-from train.augmentation import Augmentation
-from train.point_target import PointTarget
+from augmentation import Augmentation
+from point_target import PointTarget
 from utils import center2corner, Center
 
 logger = logging.getLogger("global")
@@ -19,13 +19,13 @@ if pyv[0] == '3':
     cv2.ocl.setUseOpenCL(False)
 
 DATASET = {
-    'NAMES': ['LASOT'],
+    'NAMES': ['GOT10K'],
     'VIDEOS_PER_EPOCH': 400000,
     'TEMPLATE': {'SHIFT': 4, 'SCALE': 0.05, 'BLUR': 0.0, 'FLIP': 0.0, 'COLOR': 1.0},
     'SEARCH': {'SHIFT': 64, 'SCALE': 0.18, 'BLUR': 0.2, 'FLIP': 0.0, 'COLOR': 1.0},
     'NEG': 0.2,
     'GRAY': 0.0,
-    'LASOT': {'ROOT': '', 'ANNO': '', 'FRAME_RANGE': 100, 'NUM_USE': 100000}
+    'GOT10K': {'ROOT': '/home/danylo/data/full_data(1)/train', 'FRAME_RANGE': 100, 'NUM_USE': 100000}
 }
 TRAIN_EPOCH = 10
 EXEMPLAR_SIZE = 127
@@ -35,69 +35,67 @@ OUTPUT_SIZE = 15
 
 
 class SubDataset(object):
-    def __init__(self, name, root, anno, frame_range, num_use, start_idx):
-        cur_path = os.path.dirname(os.path.realpath(__file__))
+    def __init__(self, name, root, frame_range, num_use, start_idx):
         self.name = name
-        self.root = os.path.join(cur_path, '../../../', root)
-        self.anno = os.path.join(cur_path, '../../../', anno)
+        self.root = root
         self.frame_range = frame_range
         self.num_use = num_use
         self.start_idx = start_idx
-        logger.info("loading " + name)
-        with open(self.anno, 'r') as f:
-            meta_data = json.load(f)
-            meta_data = self._filter_zero(meta_data)
 
-        for video in list(meta_data.keys()):
-            for track in meta_data[video]:
-                frames = meta_data[video][track]
-                frames = list(map(int,
-                              filter(lambda x: x.isdigit(), frames.keys())))
-                frames.sort()
-                meta_data[video][track]['frames'] = frames
-                if len(frames) <= 0:
-                    logger.warning("{}/{} has no frames".format(video, track))
-                    del meta_data[video][track]
+        self.labels = {}
+        self.videos = []
 
-        for video in list(meta_data.keys()):
-            if len(meta_data[video]) <= 0:
-                logger.warning("{} has no tracks".format(video))
-                del meta_data[video]
+        videos = sorted(os.listdir(self.root))
 
-        self.labels = meta_data
-        self.num = len(self.labels)
+        for video in videos:
+            video_path = os.path.join(self.root, video)
+            if not os.path.isdir(video_path):
+                continue
+
+            gt_path = os.path.join(video_path, "groundtruth.txt")
+            if not os.path.exists(gt_path):
+                continue
+
+            with open(gt_path, "r") as f:
+                lines = f.readlines()
+
+            frames = []
+            annos = {}
+
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+
+                x, y, w, h = map(float, line.split(","))
+
+                if w <= 0 or h <= 0:
+                    continue
+
+                # convert to x1,y1,x2,y2
+                x1, y1 = x, y
+                x2, y2 = x + w, y + h
+
+                frame_id = i
+                frames.append(frame_id)
+                annos[frame_id] = [x1, y1, x2, y2]
+
+            if len(frames) == 0:
+                continue
+
+            self.labels[video] = {
+                "0": {
+                    "frames": frames,
+                    "annos": annos
+                }
+            }
+
+            self.videos.append(video)
+
+        self.num = len(self.videos)
         self.num_use = self.num if self.num_use == -1 else self.num_use
-        self.videos = list(meta_data.keys())
-        logger.info("{} loaded".format(self.name))
-        self.path_format = '{}.{}.{}.jpg'
+
         self.pick = self.shuffle()
-
-    def _filter_zero(self, meta_data):
-        meta_data_new = {}
-        for video, tracks in meta_data.items():
-            new_tracks = {}
-            for trk, frames in tracks.items():
-                new_frames = {}
-                for frm, bbox in frames.items():
-                    if not isinstance(bbox, dict):
-                        if len(bbox) == 4:
-                            x1, y1, x2, y2 = bbox
-                            w, h = x2 - x1, y2 - y1
-                        else:
-                            w, h = bbox
-                        if w <= 0 or h <= 0:
-                            continue
-                    new_frames[frm] = bbox
-                if len(new_frames) > 0:
-                    new_tracks[trk] = new_frames
-            if len(new_tracks) > 0:
-                meta_data_new[video] = new_tracks
-        return meta_data_new
-
-    def log(self):
-        logger.info("{} start-index {} select [{}/{}] path_format {}".format(
-            self.name, self.start_idx, self.num_use,
-            self.num, self.path_format))
 
     def shuffle(self):
         lists = list(range(self.start_idx, self.start_idx + self.num))
@@ -108,40 +106,50 @@ class SubDataset(object):
         return pick[:self.num_use]
 
     def get_image_anno(self, video, track, frame):
-        frame = "{:06d}".format(frame)
-        image_path = os.path.join(self.root, video, self.path_format.format(frame, track, 'x'))
-        image_anno = self.labels[video][track][frame]
-        return image_path, image_anno
+        image_path = os.path.join(self.root, video, f"{frame+1:08d}.jpg")
+        bbox = self.labels[video][track]["annos"][frame]
+        return image_path, bbox
 
     def get_positive_pair(self, index):
         video_name = self.videos[index]
         video = self.labels[video_name]
-        track = np.random.choice(list(video.keys()))
+        track = "0"
         track_info = video[track]
 
         frames = track_info['frames']
-        template_frame = np.random.randint(0, len(frames))
-        left = max(template_frame - self.frame_range, 0)
-        right = min(template_frame + self.frame_range, len(frames)-1) + 1
-        search_range = frames[left:right]
-        template_frame = frames[template_frame]
-        search_frame = np.random.choice(search_range)
+
+        template_idx = np.random.randint(0, len(frames))
+        template_frame = frames[template_idx]
+
+        left = max(template_idx - self.frame_range, 0)
+        right = min(template_idx + self.frame_range, len(frames) - 1)
+
+        search_idx = np.random.randint(left, right + 1)
+        search_frame = frames[search_idx]
+
         return self.get_image_anno(video_name, track, template_frame), \
-            self.get_image_anno(video_name, track, search_frame)
+               self.get_image_anno(video_name, track, search_frame)
 
     def get_random_target(self, index=-1):
         if index == -1:
             index = np.random.randint(0, self.num)
+
         video_name = self.videos[index]
         video = self.labels[video_name]
-        track = np.random.choice(list(video.keys()))
+        track = "0"
         track_info = video[track]
+
         frames = track_info['frames']
         frame = np.random.choice(frames)
+
         return self.get_image_anno(video_name, track, frame)
 
     def __len__(self):
         return self.num
+
+    def log(self):
+        logger.info(
+            "{} start-index {} select [{}/{}]".format(self.name, self.start_idx, self.num_use, self.num))
 
 
 class BANDataset(Dataset):
@@ -161,11 +169,10 @@ class BANDataset(Dataset):
         start = 0
         self.num = 0
         for name in DATASET['NAMES']:
-            subdata_cfg = getattr(DATASET, name)
+            subdata_cfg = DATASET.get(name)
             sub_dataset = SubDataset(
                     name,
                     subdata_cfg['ROOT'],
-                    subdata_cfg['ANNO'],
                     subdata_cfg['FRAME_RANGE'],
                     subdata_cfg['NUM_USE'],
                     start
