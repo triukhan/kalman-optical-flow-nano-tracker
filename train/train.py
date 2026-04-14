@@ -261,7 +261,8 @@ def main():
             os.makedirs(LOG_DIR)
         logger.info("Version Information: \n{}\n".format(commit()))
 
-    model = ModelBuilder().cuda().train()
+    # model = ModelBuilder().cuda().train()
+    model = ModelBuilder().train()
 
     # if cfg.BACKBONE.PRETRAINED:
     #     cur_path = os.path.dirname(os.path.realpath(__file__))

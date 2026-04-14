@@ -87,7 +87,7 @@ def main():
                 cx, cy, w, h = get_axis_aligned_bbox(np.array(gt_bbox))
                 # gt_bbox_ = [cx - (w - 1) / 2, cy - (h - 1) / 2, w, h]  # [topx,topy,w,h]
                 gt_bbox_ = gt_bbox
-                tracker.init(img, [cx, cy, w, h ])AW d
+                tracker.init(img, [cx, cy, w, h ])
                 pred_bbox = gt_bbox_
                 scores.append(None)
                 pred_bboxes.append(pred_bbox)
