@@ -1,8 +1,7 @@
 import torch.nn as nn
-import torch
 
 from models.backbone import mobilenetv3_small_v3
-from models.head import UPChannelBAN, DepthwiseBAN
+from models.head import DepthwiseBAN
 from models.loss import select_iou_loss
 
 
@@ -77,7 +76,7 @@ class ModelBuilder(nn.Module):
             loc_loss = select_iou_loss(loc, label_loc, cls)
             outputs = {}
 
-            outputs['total_loss'] = self.cfg.TRAIN.LOC_WEIGHT * loc_loss
+            outputs['total_loss'] = 1.0 * loc_loss
             outputs['loc_loss'] = loc_loss
 
             return outputs

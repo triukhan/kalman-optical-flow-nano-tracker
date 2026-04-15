@@ -16,7 +16,7 @@ def track_object(video_path: Path, stop=False):
     video = cv2.VideoCapture(video_path)
     video.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    model = load_pretrain(ModelBuilder(), MODEL_PATH).eval()
+    model = load_pretrain(ModelBuilder(), MODEL_PATH).eval().cuda()
     model.eval()
 
     tracker = NanoTracker(model)
