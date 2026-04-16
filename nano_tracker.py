@@ -10,6 +10,33 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 H, W = 60, 60
 
+def create_kalman():
+    kalman_f = cv2.KalmanFilter(8, 4)
+
+    kalman_f.transitionMatrix = np.array([
+        [1,0,0,0,1,0,0,0],
+        [0,1,0,0,0,1,0,0],
+        [0,0,1,0,0,0,1,0],
+        [0,0,0,1,0,0,0,1],
+        [0,0,0,0,1,0,0,0],
+        [0,0,0,0,0,1,0,0],
+        [0,0,0,0,0,0,1,0],
+        [0,0,0,0,0,0,0,1]
+    ], np.float32)
+
+    kalman_f.measurementMatrix = np.array([
+        [1,0,0,0,0,0,0,0],
+        [0,1,0,0,0,0,0,0],
+        [0,0,1,0,0,0,0,0],
+        [0,0,0,1,0,0,0,0]
+    ], np.float32)
+
+    kalman_f.processNoiseCov = np.eye(8, dtype=np.float32) * 0.01
+    kalman_f.measurementNoiseCov = np.eye(4, dtype=np.float32) * 0.05
+
+    return kalman_f
+
+
 
 def normalize(image_patch):
     image_patch = image_patch.transpose(2, 0, 1)
@@ -71,9 +98,11 @@ class NanoTracker:
     def __init__(self, model):
         self.size = None
         self.center_pos = None
+        self.kalman_filter = None
         self.need_init = False
 
         self.context_amount = 0.5
+        # --------------------------------------------------------------------------------------------------------------
         self.score_size = 15
         self.stride = 16
 
@@ -81,26 +110,37 @@ class NanoTracker:
         window = np.outer(hanning, hanning)
         self.cls_out_channels = 2
         self.window = window.flatten()
-
         self.points = self.generate_points(self.stride, self.score_size)
+        # --------------------------------------------------------------------------------------------------------------
+
         self.model = model
         self.model.eval()
 
     def init(self, frame, bbox):
+        self.kalman_filter = create_kalman()
         self.center_pos = np.array([bbox[0], bbox[1]])
         self.size = np.array([bbox[2], bbox[3]])
 
         w, h = bbox[2], bbox[3]
+
+        # zeros - we don't have these values so far, cuz this is the first frame
+        self.kalman_filter.statePost = np.array([[bbox[0]], [bbox[1]], [w], [h], [0], [0], [0], [0]], np.float32)
+        self.kalman_filter.statePre = self.kalman_filter.statePost.copy() # just for correct initializing. by default statePre has zeros
+        self.kalman_filter.errorCovPost = np.eye(8, dtype=np.float32)  # set a shape of uncertainty
 
         # figuring out batch around bbox
         context = self.context_amount * (w + h)
         crop_size = int(np.sqrt((w + context) * (h + context)))  # sqrt saves proportions
 
         z_crop = get_subwindow_tracking(frame, self.center_pos, 127, crop_size).cuda()
-
         self.model.init(z_crop)
 
     def track(self, frame):
+        # for the first frame filter will not affect tracker
+        prediction = self.kalman_filter.predict()  # predict from statePre, statePost and transitionMatrix
+        px, py, pw, ph = prediction[:4].flatten()
+        px, py = int(px - pw / 2), int(py - ph / 2)
+
         w_z = self.size[0] + self.context_amount * np.sum(self.size)
         h_z = self.size[1] + self.context_amount * np.sum(self.size)
         s_z = np.sqrt(w_z * h_z)
@@ -139,15 +179,36 @@ class NanoTracker:
         width = self.size[0] * (1 - lr) + bbox[2] * lr
         height = self.size[1] * (1 - lr) + bbox[3] * lr
 
+
+        print(scores[best_idx])
+
         # don't let center be out of frame
         cx, cy, width, height = self._bbox_clip(cx, cy, width, height, frame.shape[:2])
 
-        self.center_pos = np.array([cx, cy])
-        self.size = np.array([width, height])
+        # kalman correction
+        measurement = np.array([[cx], [cy], [width], [height]], np.float32)
+        self.kalman_filter.correct(measurement)
+
+        dist = np.linalg.norm([cx - px, cy - py])
+        norm_dist = dist / (pw + ph + 1e-6)
+        motion_penalty = np.exp(-norm_dist * 5)
+
+        alpha = scores[best_idx] * penalty[best_idx] * motion_penalty
+        alpha = np.clip(alpha, 0, 0.7)
+
+        bx = alpha * cx + (1 - alpha) * px
+        by = alpha * cy + (1 - alpha) * py
+        bw = alpha * width + (1 - alpha) * pw
+        bh = alpha * height + (1 - alpha) * ph
+
+        self.center_pos = np.array([bx, by])
+        self.size = np.array([bw, bh])
 
         return {
             'bbox': [cx - width / 2, cy - height / 2, width, height],
-            'best_score': scores[best_idx]
+            'best_score': alpha,
+            'kalman_prediction': [px, py, pw, ph],
+            'filtered': [bx, by, bw, bh]
         }
 
     @staticmethod
