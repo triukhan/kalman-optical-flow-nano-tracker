@@ -100,6 +100,8 @@ class NanoTracker:
         self.center_pos = None
         self.kalman_filter = None
         self.need_init = False
+        self.lost_counter = 0
+        self.returned_counter = 0
 
         self.context_amount = 0.5
         # --------------------------------------------------------------------------------------------------------------
@@ -132,21 +134,31 @@ class NanoTracker:
         context = self.context_amount * (w + h)
         crop_size = int(np.sqrt((w + context) * (h + context)))  # sqrt saves proportions
 
-        z_crop = get_subwindow_tracking(frame, self.center_pos, 127, crop_size).cuda()
+        z_crop = get_subwindow_tracking(frame, self.center_pos, 127, crop_size)
         self.model.init(z_crop)
 
     def track(self, frame):
         # for the first frame filter will not affect tracker
         prediction = self.kalman_filter.predict()  # predict from statePre, statePost and transitionMatrix
         px, py, pw, ph = prediction[:4].flatten()
-        px, py = int(px - pw / 2), int(py - ph / 2)
+        # px, py = int(px - pw / 2), int(py - ph / 2)
 
         w_z = self.size[0] + self.context_amount * np.sum(self.size)
         h_z = self.size[1] + self.context_amount * np.sum(self.size)
         s_z = np.sqrt(w_z * h_z)
+
+        if self.lost_counter > 5:
+            search_scale = 5.0
+        else:
+            search_scale = 1.0
         scale_z = 127 / s_z
-        s_x = s_z * (255 / 127)
-        x_crop = get_subwindow_tracking(frame, self.center_pos, 255, round(s_x)).cuda()
+        s_x = s_z * (255 / 127) * search_scale
+
+        print(s_x)
+
+        x_crop = get_subwindow_tracking(frame, self.center_pos, 255, round(s_x))
+
+        print(x_crop)
 
         outputs = self.model.track(x_crop)
         scores = self._convert_score(outputs['cls'])
@@ -179,22 +191,41 @@ class NanoTracker:
         width = self.size[0] * (1 - lr) + bbox[2] * lr
         height = self.size[1] * (1 - lr) + bbox[3] * lr
 
-
-        print(scores[best_idx])
-
         # don't let center be out of frame
         cx, cy, width, height = self._bbox_clip(cx, cy, width, height, frame.shape[:2])
 
-        # kalman correction
-        measurement = np.array([[cx], [cy], [width], [height]], np.float32)
-        self.kalman_filter.correct(measurement)
-
+        score = scores[best_idx]
         dist = np.linalg.norm([cx - px, cy - py])
         norm_dist = dist / (pw + ph + 1e-6)
         motion_penalty = np.exp(-norm_dist * 5)
+        conf = penalty[best_idx] * motion_penalty
+        print(score, self.lost_counter)
 
-        alpha = scores[best_idx] * penalty[best_idx] * motion_penalty
-        alpha = np.clip(alpha, 0, 0.7)
+        score_threshold = 0.95
+
+        if score < score_threshold:
+            self.lost_counter += 1
+        elif score > score_threshold and self.lost_counter >= 5:
+            print('detection counter +1')
+            self.returned_counter += 1
+
+        if score > score_threshold and (self.returned_counter >= 2 or self.lost_counter <= 5):
+            print('detection ok')
+            self.kalman_filter.correct(np.array([[cx], [cy], [width], [height]], np.float32))
+            self.lost_counter = 0
+            self.returned_counter = 0
+
+        if self.lost_counter > 5:
+            # damping = 0.5 + 0.5 * conf
+            #
+            # self.kalman_filter.statePost[4:] *= damping
+            alpha = 0.0
+        else:
+            alpha = scores[best_idx] * conf
+            alpha = np.clip(alpha, 0, 0.7)
+
+        # if self.lost_counter > 10:
+        #     self.kalman_filter.processNoiseCov *= 0.92
 
         bx = alpha * cx + (1 - alpha) * px
         by = alpha * cy + (1 - alpha) * py
@@ -208,7 +239,7 @@ class NanoTracker:
             'bbox': [cx - width / 2, cy - height / 2, width, height],
             'best_score': alpha,
             'kalman_prediction': [px, py, pw, ph],
-            'filtered': [bx, by, bw, bh]
+            'filtered': [bx - bw / 2, by - bh / 2, bw, bh]
         }
 
     @staticmethod

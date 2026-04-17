@@ -33,7 +33,7 @@ def track_object(video_path: Path, stop=False):
     video = cv2.VideoCapture(video_path)
     video.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    model = load_pretrain(ModelBuilder(), MODEL_PATH).eval().cuda()
+    model = load_pretrain(ModelBuilder(), MODEL_PATH).eval()
     model.eval()
 
     tracker = NanoTracker(model)
@@ -59,9 +59,9 @@ def track_object(video_path: Path, stop=False):
             kalman = res['kalman_prediction']
 
             x, y, w, h = tracker.bbox
-            draw_box(frame, bbox, (0, 255, 0), "bbox")  # зелений
-            draw_box(frame, filtered, (255, 0, 0), "filtered")  # синій
-            draw_box(frame, kalman, (0, 0, 255), "kalman")  # червоний
+            # draw_box(frame, bbox, (0, 255, 0), "bbox")
+            draw_box(frame, filtered, (0, 255, 0), "filtered")
+            # draw_box(frame, kalman, (0, 0, 255), "kalman")
             # px, py, pw, ph = res['kalman_prediction']
             # cv2.rectangle(
             #     frame,
@@ -90,5 +90,5 @@ def track_object(video_path: Path, stop=False):
     cv2.destroyAllWindows()
 
 
-vid = PROJECT_ROOT / 'nano-track' / 'data' / 'helicopter.mp4'
+vid = PROJECT_ROOT / 'nano-track' / 'data' / '8177427-uhd_3840_2160_24fps.mp4'
 track_object(vid, stop=True)
