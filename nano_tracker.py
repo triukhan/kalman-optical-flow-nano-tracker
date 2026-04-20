@@ -1,14 +1,29 @@
+from collections import deque
 from pathlib import Path
 
 import cv2
 import numpy as np
 import torch
+from sympy.abc import alpha
 
 from utils import corner2center
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 H, W = 60, 60
+
+
+def get_search_bbox(center_pos, s_x):
+    cx, cy = center_pos
+    half = s_x / 2
+
+    x1 = int(cx - half)
+    y1 = int(cy - half)
+    x2 = int(cx + half)
+    y2 = int(cy + half)
+
+    return x1, y1, x2, y2
+
 
 def create_kalman():
     kalman_f = cv2.KalmanFilter(8, 4)
@@ -94,6 +109,8 @@ def get_subwindow_tracking(image, center_pos, model_size, original_size):
     return im_patch
 
 
+
+
 class NanoTracker:
     def __init__(self, model):
         self.size = None
@@ -102,6 +119,7 @@ class NanoTracker:
         self.need_init = False
         self.lost_counter = 0
         self.returned_counter = 0
+        self.counter = 0
 
         self.context_amount = 0.5
         # --------------------------------------------------------------------------------------------------------------
@@ -117,6 +135,57 @@ class NanoTracker:
 
         self.model = model
         self.model.eval()
+
+    def global_search(self, frame, s_x, scale_z):
+        H, W = frame.shape[:2]
+
+        cx0, cy0 = self.center_pos
+
+        search_radius = s_x * 2
+
+        x_min = max(0, int(cx0 - search_radius))
+        x_max = min(W, int(cx0 + search_radius))
+        y_min = max(0, int(cy0 - search_radius))
+        y_max = min(H, int(cy0 + search_radius))
+
+        step = int(s_x * 1.2)
+
+        best_score = -1
+        best_bbox = None
+        best_center = None
+
+        for cy in range(y_min, y_max, step):
+            for cx in range(x_min, x_max, step):
+
+                x_crop = get_subwindow_tracking(
+                    frame,
+                    (cx, cy),
+                    255,
+                    round(s_x)
+                )
+
+                outputs = self.model.track(x_crop)
+                scores = self._convert_score(outputs['cls'])
+                predicted_bboxes = self._convert_bbox(outputs['loc'], self.points)
+
+                idx = np.argmax(scores)
+
+                bbox = predicted_bboxes[:, idx] / scale_z
+
+                pred_cx = bbox[0] + cx
+                pred_cy = bbox[1] + cy
+                w = bbox[2]
+                h = bbox[3]
+
+                score = scores[idx]
+
+                if score > best_score:
+                    best_score = score
+                    best_bbox = [pred_cx - w / 2, pred_cy - h / 2, w, h]
+                    best_center = (pred_cx, pred_cy)
+
+        print(best_bbox, best_score, best_center)
+        return best_bbox, best_score, best_center
 
     def init(self, frame, bbox):
         self.kalman_filter = create_kalman()
@@ -136,29 +205,23 @@ class NanoTracker:
 
         z_crop = get_subwindow_tracking(frame, self.center_pos, 127, crop_size)
         self.model.init(z_crop)
+        self.kalman_history = deque(maxlen=30)
 
-    def track(self, frame):
-        # for the first frame filter will not affect tracker
-        prediction = self.kalman_filter.predict()  # predict from statePre, statePost and transitionMatrix
-        px, py, pw, ph = prediction[:4].flatten()
-        # px, py = int(px - pw / 2), int(py - ph / 2)
+    def track(self, frame, with_kalman=True):
+        if with_kalman:
+            prediction = self.kalman_filter.predict()
+            px, py, pw, ph = prediction[:4].flatten()
+        else:
+            px, py, pw, ph = self.center_pos[0], self.center_pos[1], self.size[0], self.size[1]
 
         w_z = self.size[0] + self.context_amount * np.sum(self.size)
         h_z = self.size[1] + self.context_amount * np.sum(self.size)
         s_z = np.sqrt(w_z * h_z)
 
-        if self.lost_counter > 5:
-            search_scale = 5.0
-        else:
-            search_scale = 1.0
         scale_z = 127 / s_z
-        s_x = s_z * (255 / 127) * search_scale
-
-        print(s_x)
+        s_x = s_z * (255 / 127)
 
         x_crop = get_subwindow_tracking(frame, self.center_pos, 255, round(s_x))
-
-        print(x_crop)
 
         outputs = self.model.track(x_crop)
         scores = self._convert_score(outputs['cls'])
@@ -171,76 +234,127 @@ class NanoTracker:
             pad = (w + h) * 0.5
             return np.sqrt((w + pad) * (h + pad))
 
-        # compare old bbox (self.size) vs new bboxes (predicted_bboxes) size
-        s_c = change(sz(predicted_bboxes[2, :], predicted_bboxes[3, :]) / (sz(self.size[0] * scale_z, self.size[1] * scale_z)))
-        # compare aspect ratio
+        s_c = change(
+            sz(predicted_bboxes[2, :], predicted_bboxes[3, :]) / (sz(self.size[0] * scale_z, self.size[1] * scale_z)))
         r_c = change((self.size[0] / self.size[1]) / (predicted_bboxes[2, :] / predicted_bboxes[3, :]))
 
-        penalty = np.exp(-(r_c * s_c - 1) * 0.138) # combine penalty
-        penalty_scores = penalty * scores # apply penalty to the every candidate score
-        penalty_scores = penalty_scores * (1 -  0.455) + self.window * 0.455 # smooth to center
-        best_idx = np.argmax(penalty_scores) # choose the best candidate
+        penalty = np.exp(-(r_c * s_c - 1) * 0.138)
+        penalty_scores = penalty * scores
+        penalty_scores = penalty_scores * (1 - 0.455) + self.window * 0.455
+        best_idx = np.argmax(penalty_scores)
 
         bbox = predicted_bboxes[:, best_idx] / scale_z
 
         cx = bbox[0] + self.center_pos[0]
         cy = bbox[1] + self.center_pos[1]
 
-        # exponential smoothing
         lr = penalty[best_idx] * scores[best_idx] * 0.348
         width = self.size[0] * (1 - lr) + bbox[2] * lr
         height = self.size[1] * (1 - lr) + bbox[3] * lr
 
-        # don't let center be out of frame
         cx, cy, width, height = self._bbox_clip(cx, cy, width, height, frame.shape[:2])
 
         score = scores[best_idx]
-        dist = np.linalg.norm([cx - px, cy - py])
-        norm_dist = dist / (pw + ph + 1e-6)
-        motion_penalty = np.exp(-norm_dist * 5)
-        conf = penalty[best_idx] * motion_penalty
-        print(score, self.lost_counter)
-
         score_threshold = 0.95
 
-        if score < score_threshold:
-            self.lost_counter += 1
-        elif score > score_threshold and self.lost_counter >= 5:
-            print('detection counter +1')
-            self.returned_counter += 1
+        if with_kalman:
+            dist = np.linalg.norm([cx - px, cy - py])
+            norm_dist = dist / (pw + ph + 1e-6)
+            motion_penalty = np.exp(-norm_dist * 5)
+            conf = penalty[best_idx] * motion_penalty
 
-        if score > score_threshold and (self.returned_counter >= 2 or self.lost_counter <= 5):
-            print('detection ok')
-            self.kalman_filter.correct(np.array([[cx], [cy], [width], [height]], np.float32))
+            print(self.lost_counter)
+
+            if score < score_threshold:
+                self.lost_counter += 1
+            elif score > score_threshold and self.lost_counter >= 5:
+                print('detection counter +1')
+                self.returned_counter += 1
+
+            if score > score_threshold and (self.returned_counter >= 2 or self.lost_counter <= 5):
+                print('kalman corrected')
+                self.kalman_filter.correct(np.array([[cx], [cy], [width], [height]], np.float32))
+                self.lost_counter = 0
+                self.returned_counter = 0
+
+                # self.kalman_history.append(
+                #     self.kalman_filter.statePost[4:8].copy()  # [vx, vy, vw, vh]
+                # )
+
+            # if self.lost_counter == 5:
+            #     old_velocity = self.kalman_history[-10]
+            #     self.kalman_filter.statePost[4:8] = old_velocity
+            #     fresh_prediction = self.kalman_filter.predict()
+            #     px, py, pw, ph = fresh_prediction[:4].flatten()
+            #     print('kalman rolled back')
+
+
+            if self.lost_counter > 5:
+                alpha = 0.0
+            else:
+                alpha = scores[best_idx] * conf
+                alpha = np.clip(alpha, 0, 0.7)
+
+            bx = alpha * cx + (1 - alpha) * px
+            by = alpha * cy + (1 - alpha) * py
+            bw = alpha * width + (1 - alpha) * pw
+            bh = alpha * height + (1 - alpha) * ph
+        else:
+            bx, by, bw, bh = cx, cy, width, height
+            alpha = scores[best_idx]
             self.lost_counter = 0
             self.returned_counter = 0
 
-        if self.lost_counter > 5:
-            # damping = 0.5 + 0.5 * conf
-            #
-            # self.kalman_filter.statePost[4:] *= damping
-            alpha = 0.0
-        else:
-            alpha = scores[best_idx] * conf
-            alpha = np.clip(alpha, 0, 0.7)
-
-        # if self.lost_counter > 10:
-        #     self.kalman_filter.processNoiseCov *= 0.92
-
-        bx = alpha * cx + (1 - alpha) * px
-        by = alpha * cy + (1 - alpha) * py
-        bw = alpha * width + (1 - alpha) * pw
-        bh = alpha * height + (1 - alpha) * ph
-
         self.center_pos = np.array([bx, by])
         self.size = np.array([bw, bh])
+        sx1, xy1, sx2, sy2 = get_search_bbox(self.center_pos, s_x)
+
+        print(score)
 
         return {
             'bbox': [cx - width / 2, cy - height / 2, width, height],
             'best_score': alpha,
             'kalman_prediction': [px, py, pw, ph],
-            'filtered': [bx - bw / 2, by - bh / 2, bw, bh]
+            'filtered': [bx - bw / 2, by - bh / 2, bw, bh],
+            'print': [sx1, xy1, sx2, sy2],
         }
+
+    def _rescue_scan(self, frame, s_x, scale_z):
+        fH, fW = frame.shape[:2]
+        cx0, cy0 = self.center_pos
+
+        # сітка зсувів: центр + 8 точок навколо
+        offsets = [
+            (0, 0),
+            (s_x, 0), (-s_x, 0), (0, s_x), (0, -s_x),
+            (s_x, s_x), (-s_x, s_x), (s_x, -s_x), (-s_x, -s_x),
+        ]
+
+        best_score = -1
+        best_bbox = None
+        best_center = None
+
+        for dx, dy in offsets:
+            cx = np.clip(cx0 + dx, 0, fW)
+            cy = np.clip(cy0 + dy, 0, fH)
+
+            x_crop = get_subwindow_tracking(frame, (cx, cy), 255, round(s_x))
+            outputs = self.model.track(x_crop)
+            scores = self._convert_score(outputs['cls'])
+            predicted_bboxes = self._convert_bbox(outputs['loc'], self.points)
+
+            idx = np.argmax(scores)
+            score = scores[idx]
+
+            if score > best_score:
+                bbox = predicted_bboxes[:, idx] / scale_z
+                pred_cx = bbox[0] + cx
+                pred_cy = bbox[1] + cy
+                best_score = score
+                best_bbox = [pred_cx - bbox[2] / 2, pred_cy - bbox[3] / 2, bbox[2], bbox[3]]
+                best_center = (pred_cx, pred_cy)
+
+        return best_bbox, best_score, best_center
 
     @staticmethod
     def generate_points(stride, size):
