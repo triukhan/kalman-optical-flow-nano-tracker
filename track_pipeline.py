@@ -49,10 +49,10 @@ def track_object(video_path: Path, stop=False):
             tracker.init(frame, tracker.bbox)
 
         if tracker.bbox is not None:
-            _, bbox = tracker.track(frame)
+            tracker.track(frame)
             # tracker.bbox = res['bbox']
 
-            draw_box(frame, bbox, (0, 255, 0), 'bbox')
+            draw_box(frame, tracker.bbox, (0, 255, 0), 'bbox')
 
         cv2.imshow('hybrid tracking', frame)
 

@@ -88,13 +88,21 @@ class PointTracker:
 
         inliers = inliers.ravel().astype(bool)
         good_new = good_new[inliers]
+        cx, cy, w, h = self.bbox
+        center = np.array([cx + w / 2, cy + h / 2, 1.0])
+        center_new = M @ center
 
-        center_new = np.median(good_new, axis=0)
-        x, y, w, h = self.bbox
-        x = center_new[0] - w / 2
-        y = center_new[1] - h / 2
+        sx = np.sqrt(M[0, 0] ** 2 + M[0, 1] ** 2)
+        sy = np.sqrt(M[1, 0] ** 2 + M[1, 1] ** 2)
+        scale = (sx + sy) / 2
+        scale = np.clip(scale, 0.9, 1.1)
+        w_new = w * scale
+        h_new = h * scale
 
-        self.bbox = (x, y, w, h)
+        x = center_new[0] - w_new / 2
+        y = center_new[1] - h_new / 2
+
+        self.bbox = (x, y, w_new, h_new)
         self.points = good_new.reshape(-1, 1, 2)
         self.prev_gray = gray.copy()
 
@@ -122,32 +130,32 @@ def on_mouse(event, x, y, *_):
         bbox = (x - w//2, y - h//2, w, h)
         need_init = True
 
-
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    cv2.namedWindow('tracking', cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback('tracking', on_mouse)
-    if need_init and bbox is not None:
-        tracker.init(frame, bbox)
-        need_init = False
-
-    success, current_bbox = tracker.track(frame)
-
-    if success:
-        x, y, w, h = map(int, current_bbox)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-        pts = tracker.points
-        # if pts is not None:
-        #     for p in pts:
-        #         cv2.circle(frame, tuple(p.ravel().astype(int)), 3, (0, 255, 0), -1)
-    cv2.imshow('tracking', frame)
-    if True:
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord('q'):
-            break
-
-cap.release()
-cv2.destroyAllWindows()
+#
+# while True:
+#     ret, frame = cap.read()
+#     if not ret:
+#         break
+#     cv2.namedWindow('tracking', cv2.WINDOW_NORMAL)
+#     cv2.setMouseCallback('tracking', on_mouse)
+#     if need_init and bbox is not None:
+#         tracker.init(frame, bbox)
+#         need_init = False
+#
+#     success, current_bbox = tracker.track(frame)
+#
+#     if success:
+#         x, y, w, h = map(int, current_bbox)
+#         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+#
+#         pts = tracker.points
+#         # if pts is not None:
+#         #     for p in pts:
+#         #         cv2.circle(frame, tuple(p.ravel().astype(int)), 3, (0, 255, 0), -1)
+#     cv2.imshow('tracking', frame)
+#     if True:
+#         key = cv2.waitKey(0) & 0xFF
+#         if key == ord('q'):
+#             break
+#
+# cap.release()
+# cv2.destroyAllWindows()

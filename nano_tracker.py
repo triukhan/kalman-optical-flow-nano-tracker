@@ -245,9 +245,6 @@ class NanoTracker:
                 self.lost_counter = 0
                 self.returned_counter = 0
 
-                # self.kalman_history.append(
-                #     self.kalman_filter.statePost[4:8].copy()  # [vx, vy, vw, vh]
-                # )
 
             # if self.lost_counter == 5:
             #     old_velocity = self.kalman_history[-10]
@@ -284,7 +281,7 @@ class NanoTracker:
             'bbox': [cx - width / 2, cy - height / 2, width, height],
             'best_score': alpha,
             'kalman_prediction': [px, py, pw, ph],
-            'filtered': [bx - bw / 2, by - bh / 2, bw, bh],
+            'filtered': [bx, by, bw, bh], # center
             'print': [sx1, xy1, sx2, sy2],
         }
 
