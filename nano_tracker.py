@@ -133,7 +133,7 @@ class NanoTracker:
         self.model = model
         self.model.eval()
 
-    def global_search(self, frame, s_x, scale_z):
+    def _redetect(self, frame, s_x, scale_z):
         H, W = frame.shape[:2]
 
         cx0, cy0 = self.center_pos
@@ -283,7 +283,7 @@ class NanoTracker:
             if self.is_lost:
                 print(self.lost_counter)
                 if self.lost_counter == 6 or self.lost_counter % 15 == 0:
-                    best_bbox, best_score, best_center = self.global_search(frame, s_x, scale_z)
+                    best_bbox, best_score, best_center = self._redetect(frame, s_x, scale_z)
                     print(best_score)
                     if best_score > 0.99:
                         self.lost_counter = 0
