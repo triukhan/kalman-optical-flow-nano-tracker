@@ -109,7 +109,7 @@ class NanoTracker:
         # make borders
         if any([top_pad, bottom_pad, left_pad, right_pad]):
             te_im = cv2.copyMakeBorder(
-                image, top_pad, bottom_pad, left_pad, right_pad, borderType=cv2.BORDER_CONSTANT, value=channel_average
+                image, top_pad, bottom_pad, left_pad, right_pad, borderType=cv2.BORDER_CONSTANT, value=self._channel_average
             )
             im_patch = te_im[int(context_ymin):int(context_ymax + 1), int(context_xmin):int(context_xmax + 1)]
         else:
@@ -171,9 +171,7 @@ class NanoTracker:
 
         t3 = time.perf_counter()
 
-        torch.cuda.synchronize()
         outputs = self.model.track(x_crop_gpu)
-        torch.cuda.synchronize()
 
         t4 = time.perf_counter()
 

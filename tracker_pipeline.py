@@ -69,7 +69,7 @@ def track_object(video_path: Path, stop=False):
     cv2.namedWindow('tracking', cv2.WINDOW_NORMAL)
     cv2.setMouseCallback('tracking', tracker.on_mouse)
     count = 0
-    # tracker.on_mouse(cv2.EVENT_LBUTTONDOWN, 1695, 1383, 5, 5)
+    tracker.on_mouse(cv2.EVENT_LBUTTONDOWN, 551, 1580, 5, 5)
 
     while True:
         count += 1
@@ -98,7 +98,7 @@ def track_object(video_path: Path, stop=False):
 
         cv2.imshow('tracking', original_frame)
 
-        key = cv2.waitKey(1)
+        key = cv2.waitKey(0)
         if key == ord('q'):
             break
 
@@ -106,5 +106,5 @@ def track_object(video_path: Path, stop=False):
     cv2.destroyAllWindows()
 
 
-vid = PROJECT_ROOT / 'nano-track' / 'data' / 'road.mp4'
+vid = PROJECT_ROOT / 'nano-track' / 'data' / '8177427-uhd_3840_2160_24fps.mp4'
 track_object(vid, stop=True)
