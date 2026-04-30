@@ -8,6 +8,7 @@ from utils import corner2center
 
 UPDATE_FREQUENCY = 50
 REINIT_SCORE_THRESHOLD = 0.99
+SCORE_THRESHOLD = 0.95
 
 
 def create_kalman():
@@ -55,6 +56,10 @@ class NanoTracker:
         self.returned_counter = 0
         self.reinit_counter = 0
         self.score_history = deque(maxlen=5)
+        self.prev_gray = None
+        self.flow_points = None
+        self.flow_bbox = None
+        self.max_flow_points = 50
 
         self.context_amount = 0.5
         # --------------------------------------------------------------------------------------------------------------
@@ -72,14 +77,32 @@ class NanoTracker:
         self.model = model
         self.model.eval()
 
+    def _init_flow_points(self, frame, bbox):
+        x, y, w, h = bbox
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        x1 = max(0, int(x - w / 2))
+        y1 = max(0, int(y - h / 2))
+        x2 = min(gray.shape[1], int(x + w / 2))
+        y2 = min(gray.shape[0], int(y + h / 2))
+
+        mask = np.zeros_like(gray)
+        mask[y1:y2, x1:x2] = 255
+
+        points = cv2.goodFeaturesToTrack(
+            gray,
+            maxCorners=self.max_flow_points,
+            qualityLevel=0.01,
+            minDistance=5,
+            mask=mask,
+            blockSize=7
+        )
+
+        self.prev_gray = gray
+        self.flow_points = points
+        self.flow_bbox = np.array([x, y, w, h], dtype=np.float32)
+
     def get_subwindow_tracking(self, image, center_pos, model_size, original_size):
-        """
-        args:
-            im: bgr based image
-            pos: center position
-            model_sz: exemplar size
-            s_z: original size
-        """
         if isinstance(center_pos, float):
             center_pos = [center_pos, center_pos]
 
@@ -138,6 +161,7 @@ class NanoTracker:
         # figuring out batch around bbox
         context = self.context_amount * (w + h)
         crop_size = int(np.sqrt((w + context) * (h + context)))  # sqrt saves proportions
+        self._init_flow_points(frame, [bbox[0], bbox[1], bbox[2], bbox[3]])
 
         z_crop = self.get_subwindow_tracking(frame, self.center_pos, 127, crop_size)
         self.model.init(z_crop)
@@ -145,36 +169,24 @@ class NanoTracker:
         self.score_history.clear()
 
     def track(self, frame):
-        t0 = time.perf_counter()
-
         self.reinit_counter += 1
+
         prediction = self.kalman_filter.predict()
         px, py, pw, ph = prediction[:4].flatten()
 
-        w_z = self.size[0] + self.context_amount * np.sum(self.size)
-        h_z = self.size[1] + self.context_amount * np.sum(self.size)
-        area = w_z * h_z
-        if area <= 0 or np.isnan(area):
-            area = 1.0
+        flow_result = self._track_flow(frame)
 
-        s_z = np.sqrt(area)
-        scale_z = 127 / s_z
-        s_x = s_z * (255 / 127)
+        if flow_result is not None:
+            fx, fy, fw, fh, flow_n = flow_result
+            search_center = np.array([fx, fy], dtype=np.float32)
+        else:
+            fx, fy, fw, fh, flow_n = None, None, None, None, 0
+            search_center = np.array([px, py], dtype=np.float32)
 
-        t1 = time.perf_counter()
+        s_x, scale_z = self._figure_search_size()
+        x_crop = self.get_subwindow_tracking(frame, search_center, 255, round(s_x))
 
-        x_crop = self.get_subwindow_tracking(frame, self.center_pos, 255, round(s_x))
-
-        t2 = time.perf_counter()
-
-        x_crop_gpu = x_crop
-
-        t3 = time.perf_counter()
-
-        outputs = self.model.track(x_crop_gpu)
-
-        t4 = time.perf_counter()
-
+        outputs = self.model.track(x_crop)
         scores = self._convert_score(outputs['cls'])
         predicted_bboxes = self._convert_bbox(outputs['loc'], self.points)
 
@@ -185,7 +197,6 @@ class NanoTracker:
             pad = (w + h) * 0.5
             return np.sqrt((w + pad) * (h + pad))
 
-        t5 = time.perf_counter()
         s_c = change(sz(predicted_bboxes[2, :], predicted_bboxes[3, :]) / (sz(self.size[0] * scale_z, self.size[1] * scale_z)))
         r_c = change((self.size[0] / self.size[1]) / (predicted_bboxes[2, :] / predicted_bboxes[3, :]))
 
@@ -196,132 +207,152 @@ class NanoTracker:
 
         bbox = predicted_bboxes[:, best_idx] / scale_z
 
-        cx = bbox[0] + self.center_pos[0]
-        cy = bbox[1] + self.center_pos[1]
+        cx = bbox[0] + search_center[0]
+        cy = bbox[1] + search_center[1]
 
         lr = penalty[best_idx] * scores[best_idx] * 0.348
         width = self.size[0] * (1 - lr) + bbox[2] * lr
         height = self.size[1] * (1 - lr) + bbox[3] * lr
 
         cx, cy, width, height = self._bbox_clip(cx, cy, width, height, frame.shape[:2])
-        t6 = time.perf_counter()
         score = scores[best_idx]
-        score_threshold = 0.95
 
         dist = np.linalg.norm([cx - px, cy - py])
         norm_dist = dist / (pw + ph + 1e-6)
         motion_penalty = np.exp(-norm_dist * 5)
         conf = penalty[best_idx] * motion_penalty
 
-        print(self.lost_counter, score)
-
-        if score < score_threshold:
-            self.lost_counter += 1
-        elif self.lost_counter >= 5:
-            # need to success returning
-            self.returned_counter += 1
-
+        tracker_ok = score >= SCORE_THRESHOLD
         self.is_lost = self.lost_counter > 5
 
-        if score > score_threshold and not self.is_lost or self.returned_counter >= 2:
-            # detection ok
+        if not tracker_ok:
+            self.lost_counter += 1
+        elif self.is_lost:
+            self.returned_counter += 1 # need to success returning
+
+        print(self.lost_counter, score)
+
+        if tracker_ok:
+            # tracker + flow + kalman
+            # weight of tracker depends on score
+            wt = np.clip((score - SCORE_THRESHOLD) / (1.0 - SCORE_THRESHOLD + 1e-6), 0.0, 1.0)
+            wt = 0.45 + 0.35 * wt  # tracker in [0.45, 0.80]
+            if flow_result is not None:
+                wf = 0.15
+                wk = 1.0 - wt - wf
+            else:
+                wf = 0.0
+                wk = 1.0 - wt
+
+            bx = wt * cx + wf * (fx if flow_result is not None else 0.0) + wk * px
+            by = wt * cy + wf * (fy if flow_result is not None else 0.0) + wk * py
+            bw = wt * width + wf * (fw if flow_result is not None else 0.0) + wk * pw
+            bh = wt * height + wf * (fh if flow_result is not None else 0.0) + wk * ph
+
             self.kalman_filter.correct(np.array([[cx], [cy], [width], [height]], np.float32))
             self.lost_counter = 0
             self.returned_counter = 0
-        t7 = time.perf_counter()
-        if self.is_lost:
-            if self.lost_counter == 6 or self.lost_counter % 15 == 0:
-                best_bbox, best_score, best_center = self._redetect(frame, s_x, scale_z)
-                print(best_score)
-                if best_score > 0.99:
-                    self.lost_counter = 0
-                    self.returned_counter = 0
-                    self.is_lost = False
-
-                    cx, cy = best_center
-                    bw, bh = best_bbox[2], best_bbox[3]
-                    self.center_pos = np.array([cx, cy])
-                    self.size = np.array([bw, bh])
-                    self.kalman_filter.correct(np.array([[cx], [cy], [bw], [bh]], np.float32))
-                    self.kalman_filter.statePost[4:8] = 0
-
-                    return {'filtered': best_bbox}
-
-            alpha = 0.0
         else:
-            alpha = scores[best_idx] * conf
-            alpha = np.clip(alpha, 0, 0.7)
+            print('ONLY FLOW & KALMAN')
+            # tracker is not trusted
+            # use only flow + kalman
+            if flow_result is not None:
+                wf = 0.7
+                wk = 0.3
+                bx = wf * fx + wk * px
+                by = wf * fy + wk * py
+                bw = wf * fw + wk * pw
+                bh = wf * fh + wk * ph
+            else:
+                print('ONLY KALMAN')
+                bx, by, bw, bh = px, py, pw, ph
 
-        self.score_history.append(float(score))
+        bx, by, bw, bh = self._bbox_clip(bx, by, bw, bh, frame.shape[:2])
 
-        bx = alpha * cx + (1 - alpha) * px
-        by = alpha * cy + (1 - alpha) * py
-        bw = alpha * width + (1 - alpha) * pw
-        bh = alpha * height + (1 - alpha) * ph
+        if tracker_ok and not self.is_lost or self.returned_counter >= 2:
+            self.kalman_filter.correct(
+                np.array([[bx], [by], [bw], [bh]], np.float32)
+            )
+            self.lost_counter = 0
+            self.returned_counter = 0
+        elif flow_result is not None and flow_n >= 10 and not self.is_lost:
+            self.kalman_filter.correct(
+                np.array([[bx], [by], [bw], [bh]], np.float32)
+            )
+
+        self.score_history.append(score)
 
         if self.reinit_counter >= UPDATE_FREQUENCY and all(s > REINIT_SCORE_THRESHOLD for s in self.score_history):
             print('RE-INIT')
             self.init(frame, [bx, by, bw, bh])
+            return {'filtered': [bx - bw / 2, by - bh / 2, bw, bh]}
 
-        self.center_pos = np.array([bx, by])
-        self.size = np.array([bw, bh])
-        t8 = time.perf_counter()
+        self.center_pos = np.array([bx, by], dtype=np.float32)
+        self.size = np.array([bw, bh], dtype=np.float32)
 
-        print(
-            f"[TIMING] kalman+math={1000 * (t1 - t0):.1f}ms | " 
-            f"subwindow={1000 * (t2 - t1):.1f}ms | "
-            f"to_cuda={1000 * (t3 - t2):.1f}ms | "
-            f"inference={1000 * (t4 - t3):.1f}ms | "
-            f"postprocess={1000 * (t5 - t4):.1f}ms | "
-            f"postprocess={1000 * (t6 - t5):.1f}ms | "
-            f"postprocess={1000 * (t7 - t6):.1f}ms | "
-            f"postprocess={1000 * (t8 - t7):.1f}ms | "
-            f"total={1000 * (t8 - t0):.1f}ms"
-        )
+        # reinit flow points periodically
+        if (self.reinit_counter % 10 == 0 or self.flow_points is None or len(
+                self.flow_points) < 10) and not self.is_lost:
+            self._init_flow_points(frame, [bx, by, bw, bh])
+
         return {'filtered': [bx - bw / 2, by - bh / 2, bw, bh]}
 
-    def _redetect(self, frame, s_x, scale_z):
-        H, W = frame.shape[:2]
+    def _track_flow(self, frame):
+        if self.prev_gray is None or self.flow_points is None or len(self.flow_points) < 5:
+            return None
 
-        cx0, cy0 = self.center_pos
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        search_radius = s_x * 2
+        next_points, status, err = cv2.calcOpticalFlowPyrLK(
+            self.prev_gray,
+            gray,
+            self.flow_points,
+            None,
+            winSize=(21, 21),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03)
+        )
 
-        x_min = max(0, int(cx0 - search_radius))
-        x_max = min(W, int(cx0 + search_radius))
-        y_min = max(0, int(cy0 - search_radius))
-        y_max = min(H, int(cy0 + search_radius))
+        if next_points is None or status is None:
+            self.prev_gray = gray
+            self.flow_points = None
+            return None
 
-        step = int(s_x * 1.2)
+        good_old = self.flow_points[status.flatten() == 1].reshape(-1, 2)
+        good_new = next_points[status.flatten() == 1].reshape(-1, 2)
 
-        best_score = -1
-        best_bbox = None
-        best_center = None
+        if len(good_new) < 5:
+            self.prev_gray = gray
+            self.flow_points = None
+            return None
 
-        for cy in range(y_min, y_max, step):
-            for cx in range(x_min, x_max, step):
-                x_crop = self.get_subwindow_tracking(frame,(cx, cy),255, round(s_x))
+        displacements = good_new - good_old
+        dx, dy = np.median(displacements, axis=0)
 
-                outputs = self.model.track(x_crop)
-                scores = self._convert_score(outputs['cls'])
-                predicted_bboxes = self._convert_bbox(outputs['loc'], self.points)
+        cx, cy, w, h = self.flow_bbox
+        new_cx = cx + dx
+        new_cy = cy + dy
 
-                idx = np.argmax(scores)
-                bbox = predicted_bboxes[:, idx] / scale_z
+        old_center = np.median(good_old, axis=0)
+        new_center = np.median(good_new, axis=0)
 
-                pred_cx = bbox[0] + cx
-                pred_cy = bbox[1] + cy
-                w = bbox[2]
-                h = bbox[3]
+        old_dist = np.linalg.norm(good_old - old_center, axis=1)
+        new_dist = np.linalg.norm(good_new - new_center, axis=1)
 
-                score = scores[idx]
+        if len(old_dist) > 0 and np.median(old_dist) > 1e-3:
+            scale = np.median(new_dist) / np.median(old_dist)
+            scale = np.clip(scale, 0.9, 1.1)
+        else:
+            scale = 1.0
 
-                if score > best_score:
-                    best_score = score
-                    best_bbox = [pred_cx - w / 2, pred_cy - h / 2, w, h]
-                    best_center = (pred_cx, pred_cy)
+        new_w = w * scale
+        new_h = h * scale
 
-        return best_bbox, best_score, best_center
+        self.prev_gray = gray
+        self.flow_points = good_new.reshape(-1, 1, 2)
+        self.flow_bbox = np.array([new_cx, new_cy, new_w, new_h], dtype=np.float32)
+
+        return new_cx, new_cy, new_w, new_h, len(good_new)
 
     @staticmethod
     def generate_points(stride, size):
@@ -363,6 +394,18 @@ class NanoTracker:
         width = max(10, min(width, boundary[1]))
         height = max(10, min(height, boundary[0]))
         return cx, cy, width, height
+
+    def _figure_search_size(self):
+        w_z = self.size[0] + self.context_amount * np.sum(self.size)
+        h_z = self.size[1] + self.context_amount * np.sum(self.size)
+        area = w_z * h_z
+        if area <= 0 or np.isnan(area):
+            area = 1.0
+
+        s_z = np.sqrt(area)
+        scale_z = 127 / s_z
+        s_x = s_z * (255 / 127)
+        return s_x, scale_z
 
     def on_mouse(self, event, cx, cy, _, __):
         if event == cv2.EVENT_LBUTTONDOWN:
