@@ -203,7 +203,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
         data_time = average_reduce(time.time() - end)
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
-        data = {k: v.cuda() if isinstance(v, torch.Tensor) else v for k, v in data.items()}
+        data = {k: v if isinstance(v, torch.Tensor) else v for k, v in data.items()}
         outputs = model(data)
         loss = outputs['total_loss']
 
@@ -259,9 +259,9 @@ def main():
     if rank == 0:
         if not os.path.exists(LOG_DIR):
             os.makedirs(LOG_DIR)
-        logger.info("Version Information: \n{}\n".format(commit()))
+        logger.info('Version Information: \n{}\n'.format(commit()))
 
-    model = ModelBuilder().cuda().train()
+    model = ModelBuilder().train()
 
     # if BACKBONE_PRETRAINED:
     #     cur_path = os.path.dirname(os.path.realpath(__file__))

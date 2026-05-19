@@ -12,7 +12,7 @@ from point_target import PointTarget
 from utils import center2corner, Center
 
 logger = logging.getLogger('global')
-DATASET_PATH = Path(__file__).resolve().parent.parent / 'data' / 'train'
+DATASET_PATH = Path(__file__).resolve().parent.parent / 'data1' / 'train'
 
 # setting opencv
 pyv = sys.version[0]
@@ -103,7 +103,7 @@ class SubDataset(object):
         return pick[:self.num_use]
 
     def get_image_anno(self, video, track, frame):
-        image_path = os.path.join(self.root, video, f'frame_{frame+1:05d}.jpg')
+        image_path = os.path.join(self.root, video, f'frame_{frame:05d}.jpg')
         bbox = self.labels[video][track]["annos"][frame]
         return image_path, bbox
 
@@ -122,7 +122,6 @@ class SubDataset(object):
         right = min(template_idx + self.frame_range, len(frames) - 1)
 
         search_idx = np.random.randint(left, right + 1)
-        print(search_idx)
         search_frame = frames[search_idx]
 
         return self.get_image_anno(video_name, track, template_frame), \
