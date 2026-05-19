@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TRAIN_DIR="data1/train"
+TRAIN_DIR="data/train"
 
 echo "Починаємо перейменування файлів у $TRAIN_DIR"
 

@@ -1,9 +1,9 @@
 import argparse
-import logging
 import os
 import time
 import math
 import random
+
 import numpy as np
 
 import torch
@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader
 
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data.distributed import DistributedSampler
 
 import sys
 
@@ -22,14 +21,12 @@ from dataset import BANDataset
 from distributed import get_world_size, get_rank, average_reduce, reduce_gradients, new_dist_init, \
     DistModule
 from lr_scheduler import build_lr_scheduler
-from utils import describe, print_speed, commit, load_pretrain, restore_from
+from utils import describe, print_speed, load_pretrain
 
 
 sys.path.append(os.getcwd())
-logger = logging.getLogger('global')
 parser = argparse.ArgumentParser(description='nanotrack')
 parser.add_argument('--seed', type=int, default=123456, help='random seed')
-parser.add_argument('--local_rank', type=int, default=0, help='compulsory for pytorch launcer')
 args = parser.parse_args()
 
 PRETRAINED = 'models/pretrained/nanotrackv3.pth'
@@ -62,18 +59,14 @@ def seed_torch(seed=0):
 
 
 def build_data_loader():
-    logger.info('build train dataset')
+    print('build train dataset')
     train_dataset = BANDataset()
-    logger.info('build dataset done')
+    print('build dataset done')
 
     train_sampler = None
-    if get_world_size() > 1:
-        train_sampler = DistributedSampler(train_dataset)
-    train_loader = DataLoader(train_dataset,
-                              batch_size=BATCH_SIZE,
-                              num_workers=NUM_WORKERS,
-                              pin_memory=True,
-                              sampler=train_sampler)
+    train_loader = DataLoader(
+        train_dataset, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, pin_memory=True, sampler=train_sampler
+    )
     return train_loader
 
 
@@ -168,7 +161,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             get_rank() == 0:
         os.makedirs(SNAPSHOT_DIR)
 
-    logger.info("model\n{}".format(describe(model.module)))
+    print('model\n{}'.format(describe(model.module)))
     end = time.time()
     for idx, data in enumerate(train_loader):
         if epoch != idx // num_per_epoch + start_epoch:
@@ -185,17 +178,17 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                 return
 
             if TRAIN_EPOCH == epoch:
-                logger.info('start training backbone.')
+                print('start training backbone.')
                 optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
-                logger.info("model\n{}".format(describe(model.module)))
+                print('model\n{}'.format(describe(model.module)))
 
             lr_scheduler.step(epoch)
             cur_lr = lr_scheduler.get_cur_lr()
-            logger.info('epoch: {}'.format(epoch + 1))
+            print('epoch: {}'.format(epoch + 1))
         tb_idx = idx + start_epoch * num_per_epoch
         if idx % num_per_epoch == 0 and idx != 0:
             for idx, pg in enumerate(optimizer.param_groups):
-                logger.info('epoch {} lr {}'.format(epoch + 1, pg['lr']))
+                print('epoch {} lr {}'.format(epoch + 1, pg['lr']))
                 if rank == 0:
                     tb_writer.add_scalar('lr/group{}'.format(idx + 1),
                                          pg['lr'], tb_idx)
@@ -243,7 +236,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                     else:
                         info += ("{:s}\n").format(
                             getattr(average_meter, k))
-                logger.info(info)
+                print(info)
                 print_speed(idx + 1 + start_epoch * num_per_epoch,
                             average_meter.batch_time.avg,
                             EPOCH * num_per_epoch)
@@ -251,30 +244,13 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
 
 def main():
-    rank, world_size = new_dist_init()
+    new_dist_init()
+    print('init done')
 
-    logger.info("init done")
+    model = ModelBuilder().cuda().train()
 
-    # load cfg
-    if rank == 0:
-        if not os.path.exists(LOG_DIR):
-            os.makedirs(LOG_DIR)
-        logger.info('Version Information: \n{}\n'.format(commit()))
-
-    model = ModelBuilder().train()
-
-    # if BACKBONE_PRETRAINED:
-    #     cur_path = os.path.dirname(os.path.realpath(__file__))
-    #     backbone_path = os.path.join(cur_path, '../', BACKBONE_PRETRAINED)
-    #     load_pretrain(model.backbone, backbone_path)
-
-    if rank == 0 and LOG_DIR:
-        tb_writer = SummaryWriter(LOG_DIR)
-    else:
-        tb_writer = None
-
+    tb_writer = SummaryWriter(LOG_DIR) if LOG_DIR else None
     train_loader = build_data_loader()
-
     optimizer, lr_scheduler = build_opt_lr(model, START_EPOCH)
 
     # load pretrain
@@ -284,8 +260,8 @@ def main():
         load_pretrain(model, path)
     dist_model = DistModule(model)
 
-    logger.info(lr_scheduler)
-    logger.info("model prepare done")
+    print(lr_scheduler)
+    print('model prepare done')
 
     # start training
     train(train_loader, dist_model, optimizer, lr_scheduler, tb_writer)

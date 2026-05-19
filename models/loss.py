@@ -54,12 +54,6 @@ def select_iou_loss(pred_loc, label_loc, label_cls):
     """
     Handles the case where regression output has different spatial resolution than classification.
     """
-    print(f"pred_loc: {pred_loc.shape} | label_loc: {label_loc.shape} | "
-                f"label_cls: {label_cls.shape} | pred_dim={pred_loc.dim()}")
-    B = pred_loc.shape[0]
-    H = pred_loc.shape[2]
-    W = pred_loc.shape[3]
-
     # Flatten regression to [B*H*W, 4]
     if pred_loc.dim() == 4:
         pred_loc = pred_loc.permute(0, 2, 3, 1).reshape(-1, 4)  # [B*H*W, 4]

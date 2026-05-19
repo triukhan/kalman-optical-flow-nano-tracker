@@ -10,34 +10,18 @@ POS_NUM = 16
 TOTAL_NUM = 64
 
 
-class Point:
-    """
-    This class generate points.
-    """
-    def __init__(self, stride, size, image_center):
-        self.stride = stride
-        self.size = size
-        self.image_center = image_center
+def generate_points(stride, size, im_c):
+    ori = im_c - size // 2 * stride
+    x, y = np.meshgrid([ori + stride * dx for dx in np.arange(0, size)],
+                       [ori + stride * dy for dy in np.arange(0, size)])
+    points = np.zeros((2, size, size), dtype=np.float32)
+    points[0, :, :], points[1, :, :] = x.astype(np.float32), y.astype(np.float32)
 
-        self.points = self.generate_points(self.stride, self.size, self.image_center)
-
-    def generate_points(self, stride, size, im_c):
-        ori = im_c - size // 2 * stride
-        x, y = np.meshgrid([ori + stride * dx for dx in np.arange(0, size)],
-                           [ori + stride * dy for dy in np.arange(0, size)])
-        points = np.zeros((2, size, size), dtype=np.float32)
-        points[0, :, :], points[1, :, :] = x.astype(np.float32), y.astype(np.float32)
-
-        return points
-
+    return points
 
 
 class PointTarget:
-    def __init__(self,):
-        self.points = Point(STRIDE, OUTPUT_SIZE, SEARCH_SIZE//2)
-
     def __call__(self, target, size, neg=False):
-
         # -1 ignore 0 negative 1 positive
         cls = -1 * np.ones((size, size), dtype=np.int64)
         delta = np.zeros((4, size, size), dtype=np.float32)
@@ -52,7 +36,7 @@ class PointTarget:
             return tuple(p[slt] for p in position), keep_num
 
         tcx, tcy, tw, th = corner2center(target)
-        points = self.points.points
+        points = generate_points(STRIDE, OUTPUT_SIZE, SEARCH_SIZE // 2)
 
         if neg:
             neg = np.where(np.square(tcx - points[0]) / np.square(tw / 4) +
@@ -72,7 +56,7 @@ class PointTarget:
                        np.square(tcy - points[1]) / np.square(th / 4) < 1)
         neg = np.where(np.square(tcx - points[0]) / np.square(tw / 2) +
                        np.square(tcy - points[1]) / np.square(th / 2) > 1)
-        
+
         # sampling
         pos, pos_num = select(pos, POS_NUM)
         neg, neg_num = select(neg, TOTAL_NUM - POS_NUM)

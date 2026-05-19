@@ -137,15 +137,6 @@ def _describe(model, lines=None, spaces=0):
         _describe(m, lines, space_num)
 
 
-def commit():
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-    cmd = "cd {}; git log | head -n1 | awk '{{print $2}}'".format(root)
-    commit = _exec(cmd)
-    cmd = "cd {}; git log --oneline | head -n1".format(root)
-    commit_log = _exec(cmd)
-    return "commit : {}\n  log  : {}".format(commit, commit_log)
-
-
 def describe(net, name=None):
     num = 0
     lines = []

@@ -1,4 +1,3 @@
-import logging
 import sys
 import os
 from pathlib import Path
@@ -11,8 +10,7 @@ from augmentation import Augmentation
 from point_target import PointTarget
 from utils import center2corner, Center
 
-logger = logging.getLogger('global')
-DATASET_PATH = Path(__file__).resolve().parent.parent / 'data1' / 'train'
+DATASET_PATH = Path(__file__).resolve().parent.parent / 'data' / 'train'
 
 # setting opencv
 pyv = sys.version[0]
@@ -20,29 +18,25 @@ if pyv[0] == '3':
     cv2.ocl.setUseOpenCL(False)
 
 DATASET = {
-    'NAMES': ['REGION_DATASET'],
-    'VIDEOS_PER_EPOCH': 400000,
+    'VIDEOS_PER_EPOCH': 80000,
     'TEMPLATE': {'SHIFT': 4, 'SCALE': 0.05, 'BLUR': 0.0, 'FLIP': 0.0, 'COLOR': 1.0},
     'SEARCH': {'SHIFT': 64, 'SCALE': 0.18, 'BLUR': 0.2, 'FLIP': 0.0, 'COLOR': 1.0},
     'NEG': 0.2,
     'GRAY': 0.0,
-    'REGION_DATASET': {'ROOT': DATASET_PATH, 'FRAME_RANGE': 100, 'NUM_USE': 100000}
+    'INFO': {'ROOT': DATASET_PATH, 'FRAME_RANGE': 100, 'NUM_USE': 80000}
 }
-TRAIN_EPOCH = 10
+TRAIN_EPOCH = 100
 EXEMPLAR_SIZE = 127
 SEARCH_SIZE = 255
 OUTPUT_SIZE = 15
 
 
-
 class SubDataset(object):
-    def __init__(self, name, root, frame_range, num_use, start_idx):
-        self.name = name
+    def __init__(self, root, frame_range, num_use, start_idx):
         self.root = root
         self.frame_range = frame_range
         self.num_use = num_use
         self.start_idx = start_idx
-
         self.labels = {}
         self.videos = []
 
@@ -53,11 +47,11 @@ class SubDataset(object):
             if not os.path.isdir(video_path):
                 continue
 
-            gt_path = os.path.join(video_path, "groundtruth.txt")
+            gt_path = os.path.join(video_path, 'groundtruth.txt')
             if not os.path.exists(gt_path):
                 continue
 
-            with open(gt_path, "r") as f:
+            with open(gt_path, 'r') as f:
                 lines = f.readlines()
 
             frames = []
@@ -68,7 +62,7 @@ class SubDataset(object):
                 if not line:
                     continue
 
-                x1, y1, x2, y2 = map(float, line.split(","))
+                x1, y1, x2, y2 = map(float, line.split(','))
 
                 w = x2 - x1
                 h = y2 - y1
@@ -81,13 +75,8 @@ class SubDataset(object):
 
             if len(frames) == 0:
                 continue
-            self.labels[video] = {
-                '0': {
-                    'frames': frames,
-                    'annos': annos
-                }
-            }
 
+            self.labels[video] = {'0': {'frames': frames, 'annos': annos}} # 0 - because single-object tracking :)
             self.videos.append(video)
 
         self.num = len(self.videos)
@@ -104,13 +93,14 @@ class SubDataset(object):
 
     def get_image_anno(self, video, track, frame):
         image_path = os.path.join(self.root, video, f'frame_{frame:05d}.jpg')
-        bbox = self.labels[video][track]["annos"][frame]
+        bbox = self.labels[video][track]['annos'][frame]
         return image_path, bbox
 
     def get_positive_pair(self, index):
+        """ Get a pair of annotations from one video """
         video_name = self.videos[index]
         video = self.labels[video_name]
-        track = "0"
+        track = '0'
         track_info = video[track]
 
         frames = track_info['frames']
@@ -128,6 +118,7 @@ class SubDataset(object):
                self.get_image_anno(video_name, track, search_frame)
 
     def get_random_target(self, index=-1):
+        """ Get a random annotation from random video """
         if index == -1:
             index = np.random.randint(0, self.num)
         video_name = self.videos[index]
@@ -144,40 +135,25 @@ class SubDataset(object):
         return self.num
 
     def log(self):
-        logger.info(
-            "{} start-index {} select [{}/{}]".format(self.name, self.start_idx, self.num_use, self.num))
+        print('Dataset start-index {} select [{}/{}]'.format(self.start_idx, self.num_use, self.num))
 
 
 class BANDataset(Dataset):
     def __init__(self,):
         super(BANDataset, self).__init__()
+        self.point_target = PointTarget() # create point target
+        self.all_dataset = [] # create sub dataset
 
-        # desired_size = (cfg.TRAIN.SEARCH_SIZE - cfg.TRAIN.EXEMPLAR_SIZE) / \
-        #     cfg.POINT.STRIDE + 1 + cfg.TRAIN.BASE_SIZE
-        # if desired_size != cfg.TRAIN.OUTPUT_SIZE:
-        #     raise Exception('size not match!')
-
-        # create point target
-        self.point_target = PointTarget()
-
-        # create sub dataset
-        self.all_dataset = []
         start = 0
         self.num = 0
-        for name in DATASET['NAMES']:
-            subdata_cfg = DATASET.get(name)
-            sub_dataset = SubDataset(
-                    name,
-                    subdata_cfg['ROOT'],
-                    subdata_cfg['FRAME_RANGE'],
-                    subdata_cfg['NUM_USE'],
-                    start
-                )
-            start += sub_dataset.num
-            self.num += sub_dataset.num_use
 
-            sub_dataset.log()
-            self.all_dataset.append(sub_dataset)
+        subdata_cfg = DATASET['INFO']
+        sub_dataset = SubDataset(subdata_cfg['ROOT'], subdata_cfg['FRAME_RANGE'], subdata_cfg['NUM_USE'], start)
+        start += sub_dataset.num
+        self.num += sub_dataset.num_use
+
+        sub_dataset.log()
+        self.all_dataset.append(sub_dataset)
 
         # data augmentation
         self.template_aug = Augmentation(
@@ -186,17 +162,17 @@ class BANDataset(Dataset):
                 DATASET['TEMPLATE']['BLUR'],
                 DATASET['TEMPLATE']['FLIP'],
                 DATASET['TEMPLATE']['COLOR']
-            )
+        )
         self.search_aug = Augmentation(
                 DATASET['SEARCH']['SHIFT'],
                 DATASET['SEARCH']['SCALE'],
                 DATASET['SEARCH']['BLUR'],
                 DATASET['SEARCH']['FLIP'],
                 DATASET['SEARCH']['COLOR']
-            )
+        )
         videos_per_epoch = DATASET['VIDEOS_PER_EPOCH']
         self.num = videos_per_epoch if videos_per_epoch > 0 else self.num
-        self.num *= TRAIN_EPOCH  # TRAIN.EPOCH
+        self.num *= TRAIN_EPOCH
         self.pick = self.shuffle()
 
     def shuffle(self):
@@ -210,16 +186,18 @@ class BANDataset(Dataset):
             np.random.shuffle(p)
             pick += p
             m = len(pick)
-        logger.info("shuffle done!")
-        logger.info("dataset length {}".format(self.num))
+        print('shuffle done!')
+        print('dataset length {}'.format(self.num))
         return pick[:self.num]
 
     def _find_dataset(self, index):
         for dataset in self.all_dataset:
             if dataset.start_idx + dataset.num > index:
                 return dataset, index - dataset.start_idx
+        return None
 
-    def _get_bbox(self, image, shape):
+    @staticmethod
+    def _get_bbox(image, shape):
         imh, imw = image.shape[:2]
         if len(shape) == 4:
             w, h = shape[2]-shape[0], shape[3]-shape[1]
@@ -263,24 +241,13 @@ class BANDataset(Dataset):
         search_box = self._get_bbox(search_image, search[1])
 
         # augmentation
-        template, _ = self.template_aug(template_image,
-                                        template_box,
-                                        EXEMPLAR_SIZE,
-                                        gray=gray)
-
-        search, bbox = self.search_aug(search_image,
-                                       search_box,
-                                       SEARCH_SIZE,
-                                       gray=gray)
+        template, _ = self.template_aug(template_image, template_box, EXEMPLAR_SIZE, gray=gray)
+        search, bbox = self.search_aug(search_image, search_box, SEARCH_SIZE, gray=gray)
 
         # get labels
         cls, delta = self.point_target(bbox, OUTPUT_SIZE, neg)
         template = template.transpose((2, 0, 1)).astype(np.float32)
         search = search.transpose((2, 0, 1)).astype(np.float32)
         return {
-                'template': template,
-                'search': search,
-                'label_cls': cls,
-                'label_loc': delta,
-                'bbox': np.array(bbox)
-                }
+            'template': template, 'search': search, 'label_cls': cls, 'label_loc': delta, 'bbox': np.array(bbox)
+        }

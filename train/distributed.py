@@ -106,7 +106,7 @@ def dist_init():
 def new_dist_init():
     global rank, world_size, inited
     inited = True
-    rank, world_size=0,1 
+    rank, world_size = 0, 1
     return rank, world_size
 
 def get_rank():

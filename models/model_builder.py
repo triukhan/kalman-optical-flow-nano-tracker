@@ -57,9 +57,9 @@ class ModelBuilder(nn.Module):
             only used in training
         """
         if len(data) >= 4:
-            template = data['template']
-            search = data['search']
-            label_loc = data['label_loc']
+            template = data['template'].cuda()
+            search = data['search'].cuda()
+            label_loc = data['label_loc'].cuda()
 
             # get feature
             zf = self.backbone(template)
@@ -71,7 +71,7 @@ class ModelBuilder(nn.Module):
 
             cls, loc = self.ban_head(zf, xf)
             # loc loss with iou loss
-            loc_loss = select_iou_loss(loc, label_loc, cls)
+            loc_loss = select_iou_loss(loc, label_loc, cls).cuda()
             outputs = {}
 
             outputs['total_loss'] = 1.0 * loc_loss

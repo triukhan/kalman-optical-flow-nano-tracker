@@ -28,9 +28,9 @@ class Augmentation:
         d = -b * bbox[1]
         mapping = np.array([[a, 0, c],
                             [0, b, d]]).astype(float)
-        crop = cv2.warpAffine(image, mapping, (out_sz, out_sz),
-                              borderMode=cv2.BORDER_CONSTANT,
-                              borderValue=padding)
+        crop = cv2.warpAffine(
+            image, mapping, (out_sz, out_sz), borderMode=cv2.BORDER_CONSTANT, borderValue=padding
+        )
         return crop
 
     def _blur_aug(self, image):
