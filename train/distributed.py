@@ -123,7 +123,6 @@ def get_world_size():
 def reduce_gradients(model, _type='sum'):
     types = ['sum', 'avg']
     assert _type in types, 'gradients method must be in "{}"'.format(types)
-    print("gradients method is {}".format(_type))
     if get_world_size() > 1:
         for param in model.parameters():
             if param.requires_grad:

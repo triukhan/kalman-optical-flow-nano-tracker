@@ -31,8 +31,8 @@ args = parser.parse_args()
 
 PRETRAINED = 'models/pretrained/nanotrackv3.pth'
 BATCH_SIZE = 64
-NUM_WORKERS = 2
-TRAIN_EPOCH = 10
+NUM_WORKERS = 4
+TRAIN_EPOCH = 40
 TRAIN_LAYERS = ['features']
 LAYERS_LR = 0.1
 BASE_LR = 0.005

@@ -18,7 +18,7 @@ if pyv[0] == '3':
     cv2.ocl.setUseOpenCL(False)
 
 DATASET = {
-    'VIDEOS_PER_EPOCH': 80000,
+    'VIDEOS_PER_EPOCH': 15000,
     'TEMPLATE': {'SHIFT': 4, 'SCALE': 0.05, 'BLUR': 0.0, 'FLIP': 0.0, 'COLOR': 1.0},
     'SEARCH': {'SHIFT': 64, 'SCALE': 0.18, 'BLUR': 0.2, 'FLIP': 0.0, 'COLOR': 1.0},
     'NEG': 0.2,
@@ -171,7 +171,7 @@ class BANDataset(Dataset):
                 DATASET['SEARCH']['COLOR']
         )
         videos_per_epoch = DATASET['VIDEOS_PER_EPOCH']
-        self.num = videos_per_epoch if videos_per_epoch > 0 else self.num
+        self.num = 10000
         self.num *= TRAIN_EPOCH
         self.pick = self.shuffle()
 
@@ -200,18 +200,20 @@ class BANDataset(Dataset):
     def _get_bbox(image, shape):
         imh, imw = image.shape[:2]
         if len(shape) == 4:
-            w, h = shape[2]-shape[0], shape[3]-shape[1]
+            x1, y1, x2, y2 = shape
+            w, h = x2 - x1, y2 - y1
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
         else:
             w, h = shape
+            cx, cy = imw // 2, imh // 2
+
         context_amount = 0.5
-        exemplar_size = EXEMPLAR_SIZE
-        wc_z = w + context_amount * (w+h)
-        hc_z = h + context_amount * (w+h)
+        wc_z = w + context_amount * (w + h)
+        hc_z = h + context_amount * (w + h)
         s_z = np.sqrt(wc_z * hc_z)
-        scale_z = exemplar_size / s_z
-        w = w*scale_z
-        h = h*scale_z
-        cx, cy = imw//2, imh//2
+        scale_z = EXEMPLAR_SIZE / s_z
+        w = w * scale_z
+        h = h * scale_z
         bbox = center2corner(Center(cx, cy, w, h))
         return bbox
 
@@ -248,6 +250,7 @@ class BANDataset(Dataset):
         cls, delta = self.point_target(bbox, OUTPUT_SIZE, neg)
         template = template.transpose((2, 0, 1)).astype(np.float32)
         search = search.transpose((2, 0, 1)).astype(np.float32)
+
         return {
             'template': template, 'search': search, 'label_cls': cls, 'label_loc': delta, 'bbox': np.array(bbox)
         }

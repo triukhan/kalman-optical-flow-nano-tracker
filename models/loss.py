@@ -78,7 +78,6 @@ def select_iou_loss(pred_loc, label_loc, label_cls):
     pred_loc_pos = pred_loc[pos_mask]
     label_loc_pos = label_loc[pos_mask]
 
-    if pred_loc_pos.numel() == 0:
-        return torch.tensor(0.0, device=pred_loc.device, requires_grad=True)
+    loss = linear_iou(pred_loc_pos, label_loc_pos)
 
-    return linear_iou(pred_loc_pos, label_loc_pos)
+    return loss

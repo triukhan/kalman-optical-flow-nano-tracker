@@ -51,7 +51,6 @@ class ModelBuilder(nn.Module):
 
         return {'cls': cls, 'loc': loc}
 
-
     def forward(self, data):
         """
             only used in training
@@ -60,6 +59,7 @@ class ModelBuilder(nn.Module):
             template = data['template'].cuda()
             search = data['search'].cuda()
             label_loc = data['label_loc'].cuda()
+            label_cls = data['label_cls'].cuda()
 
             # get feature
             zf = self.backbone(template)
@@ -70,13 +70,12 @@ class ModelBuilder(nn.Module):
                 xf = self.neck(xf)
 
             cls, loc = self.ban_head(zf, xf)
-            # loc loss with iou loss
-            loc_loss = select_iou_loss(loc, label_loc, cls).cuda()
+            loc_loss = select_iou_loss(loc, label_loc, label_cls)
             outputs = {}
 
             outputs['total_loss'] = 1.0 * loc_loss
             outputs['loc_loss'] = loc_loss
-
+            outputs['total_loss'] = loc_loss
             return outputs
         else:
             xf = self.backbone(data)

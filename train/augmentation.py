@@ -107,10 +107,10 @@ class Augmentation:
         return image, bbox
 
     def __call__(self, image, bbox, size, gray=False):
-        shape = image.shape
-        crop_bbox = center2corner(Center(shape[0]//2, shape[1]//2,
-                                         size-1, size-1))
-        # gray augmentation
+        cx = (bbox.x1 + bbox.x2) / 2
+        cy = (bbox.y1 + bbox.y2) / 2
+        crop_bbox = center2corner(Center(cx, cy, size - 1, size - 1))
+
         if gray:
             image = self._gray_aug(image)
 
